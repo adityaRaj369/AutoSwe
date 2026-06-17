@@ -7,7 +7,10 @@ This is a Python implementation of the AutoSWE architecture: a from-scratch ReAc
 ---
 x
 
-Screen Recording 2026-06-17 at 12.02.46 PM
+
+https://github.com/user-attachments/assets/f68e549c-903a-47c0-a2d5-ec5ff8d96bed
+
+
 ## What's inside
 
 | Layer | Technology |
