@@ -123,6 +123,15 @@ class Settings(BaseSettings):
     github_pat: str = Field(default="", alias="GITHUB_PAT")
     github_default_base_branch: str = Field(default="main", alias="GITHUB_DEFAULT_BASE_BRANCH")
 
+    # --- Jira integration ---
+    jira_base_url: str = Field(default="", alias="JIRA_BASE_URL")
+    jira_email: str = Field(default="", alias="JIRA_EMAIL")
+    jira_api_token: str = Field(default="", alias="JIRA_API_TOKEN")
+    jira_webhook_secret: str = Field(default="", alias="JIRA_WEBHOOK_SECRET")
+    jira_auto_status: str = Field(default="AutoSWE", alias="JIRA_AUTO_STATUS")
+    # Comma-separated mapping: PROJECTKEY=owner/repo,OTHER=owner2/repo2
+    jira_project_repo_map: str = Field(default="", alias="JIRA_PROJECT_REPO_MAP")
+
     # --- Agent config ---
     agent_max_steps: int = Field(default=25, alias="AGENT_MAX_STEPS")
     agent_step_timeout_ms: int = Field(default=120000, alias="AGENT_STEP_TIMEOUT_MS")
@@ -169,6 +178,19 @@ class Settings(BaseSettings):
         if provider in {"openai", "openai-compatible", "compatible", "hosted"}:
             return self.llm_model
         return self.ollama_chat_model
+
+    @property
+    def jira_repo_map(self) -> dict[str, tuple[str, str]]:
+        mapping: dict[str, tuple[str, str]] = {}
+        for item in self.jira_project_repo_map.split(","):
+            if "=" not in item:
+                continue
+            project_key, full_name = item.split("=", 1)
+            if "/" not in full_name:
+                continue
+            owner, repo = full_name.split("/", 1)
+            mapping[project_key.strip().upper()] = (owner.strip(), repo.strip())
+        return mapping
 
 
 @lru_cache

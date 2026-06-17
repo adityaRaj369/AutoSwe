@@ -78,12 +78,18 @@ async def create_run(
     issue_title: str,
     issue_body: str,
     model: str,
+    source: str = "github",
+    external_issue_key: str | None = None,
+    external_issue_url: str | None = None,
 ) -> Run:
     run = Run(
         repository_id=repository_id,
         issue_number=issue_number,
         issue_title=issue_title,
         issue_body=issue_body,
+        source=source,
+        external_issue_key=external_issue_key,
+        external_issue_url=external_issue_url,
         model=model,
         status=RunStatus.QUEUED,
     )
@@ -126,6 +132,25 @@ async def list_runs(
     return rows, total
 
 
+async def get_active_run_by_external_issue(
+    session: AsyncSession,
+    *,
+    source: str,
+    external_issue_key: str,
+) -> Run | None:
+    stmt = (
+        select(Run)
+        .where(
+            Run.source == source,
+            Run.external_issue_key == external_issue_key,
+            Run.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]),
+        )
+        .order_by(Run.created_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def update_run(session: AsyncSession, run: Run, **fields: Any) -> Run:
     for key, value in fields.items():
         setattr(run, key, value)
@@ -148,12 +173,14 @@ async def add_step(
     tool_name: str | None,
     tool_args: dict | None,
     observation: str | None,
+    agent_name: str | None = None,
     duration_ms: int | None = None,
     token_count: int | None = None,
 ) -> Step:
     step = Step(
         run_id=run_id,
         step_number=step_number,
+        agent_name=agent_name,
         thought=thought,
         tool_name=tool_name,
         tool_args=tool_args,

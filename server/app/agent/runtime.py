@@ -111,12 +111,14 @@ class AgentRuntime:
                 parsed = parse_response(raw)
                 thought = parsed.thought or "(no explicit reasoning)"
                 action = parsed.action
+                agent_name = _agent_for_action(action)
 
                 await self._emit(
                     on_step,
                     {
                         "type": "think",
                         "step": step_num,
+                        "agent_name": agent_name,
                         "thought": thought,
                         "status": "executing",
                     },
@@ -132,7 +134,7 @@ class AgentRuntime:
                     trajectory.add(
                         TrajectoryStep(step_num, thought, None, observation, token_count=token_count)
                     )
-                    await self._persist_step(on_step, step_num, thought, None, observation,
+                    await self._persist_step(on_step, step_num, agent_name, thought, None, observation,
                                              step_started, token_count)
                     if parse_failures >= MAX_PARSE_FAILURES:
                         return self._result(
@@ -163,7 +165,7 @@ class AgentRuntime:
                         TrajectoryStep(step_num, thought, action, observation, token_count=token_count)
                     )
                     await self._persist_step(
-                        on_step, step_num, thought, action, observation, step_started, token_count
+                        on_step, step_num, agent_name, thought, action, observation, step_started, token_count
                     )
                     if unsupported_tool_failures >= MAX_UNSUPPORTED_TOOL_FAILURES:
                         return self._result(
@@ -183,7 +185,13 @@ class AgentRuntime:
 
                 await self._emit(
                     on_step,
-                    {"type": "act", "step": step_num, "tool": action.tool, "args": action.args},
+                    {
+                        "type": "act",
+                        "step": step_num,
+                        "agent_name": agent_name,
+                        "tool": action.tool,
+                        "args": action.args,
+                    },
                 )
 
                 # ACT
@@ -197,7 +205,7 @@ class AgentRuntime:
                     trajectory.add(
                         TrajectoryStep(step_num, thought, action, observation, token_count=token_count)
                     )
-                    await self._persist_step(on_step, step_num, thought, action, observation,
+                    await self._persist_step(on_step, step_num, agent_name, thought, action, observation,
                                              step_started, token_count)
                     return self._result(
                         AgentStatus.SOLVED, trajectory, ctx, baseline, branch, started,
@@ -213,7 +221,7 @@ class AgentRuntime:
                     token_count=token_count,
                 )
                 trajectory.add(step)
-                await self._persist_step(on_step, step_num, thought, action, observation,
+                await self._persist_step(on_step, step_num, agent_name, thought, action, observation,
                                          step_started, token_count)
 
                 await self.context.maybe_compact(trajectory)
@@ -268,6 +276,7 @@ class AgentRuntime:
         self,
         cb: StepCallback | None,
         step_num: int,
+        agent_name: str,
         thought: str,
         action: Action | None,
         observation: str,
@@ -279,6 +288,7 @@ class AgentRuntime:
             {
                 "type": "observe",
                 "step": step_num,
+                "agent_name": agent_name,
                 "thought": thought,
                 "tool": action.tool if action else None,
                 "args": action.args if action else None,
@@ -288,3 +298,19 @@ class AgentRuntime:
                 "status": "complete",
             },
         )
+
+
+def _agent_for_action(action: Action | None) -> str:
+    if action is None:
+        return "Planner"
+    if action.tool in {"search_code", "grep", "read_file"}:
+        return "Researcher"
+    if action.tool in {"edit_file", "create_file", "run_command"}:
+        return "Coder"
+    if action.tool == "run_tests":
+        return "Tester"
+    if action.tool == "git_diff":
+        return "Reviewer"
+    if action.tool == "submit_solution":
+        return "PR Agent"
+    return "Orchestrator"

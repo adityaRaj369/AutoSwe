@@ -15,6 +15,7 @@ class StepOut(BaseModel):
 
     id: str
     step_number: int
+    agent_name: str | None = None
     thought: str | None = None
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
@@ -31,6 +32,9 @@ class RunSummary(BaseModel):
     repository_id: str
     issue_number: int
     issue_title: str
+    source: str = "github"
+    external_issue_key: str | None = None
+    external_issue_url: str | None = None
     status: RunStatus
     model: str
     total_steps: int

@@ -7,6 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ReasoningTimeline } from "../components/timeline/ReasoningTimeline";
 import { FileTree } from "../components/code/FileTree";
 import { DiffViewer } from "../components/code/DiffViewer";
+import { AgentActivity } from "../components/AgentActivity";
 
 export function RunDetail() {
   const { id } = useParams();
@@ -57,7 +58,7 @@ export function RunDetail() {
               )}
             </div>
             <h2 className="text-base font-medium text-slate-100">
-              Issue #{run.issue_number}
+              {run.source === "jira" && run.external_issue_key ? run.external_issue_key : `Issue #${run.issue_number}`}
             </h2>
             <p className="mt-1 text-sm text-slate-300">{run.issue_title}</p>
             {run.issue_body && (
@@ -66,10 +67,20 @@ export function RunDetail() {
               </p>
             )}
             <div className="mt-4 space-y-1 text-xs text-slate-500">
+              <div>Source: {run.source === "jira" ? "Jira" : "GitHub"}</div>
               <div>Model: {run.model || "—"}</div>
               <div>Steps: {visibleStepCount}</div>
               <div>Duration: {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : "—"}</div>
             </div>
+            {run.external_issue_url && (
+              <a
+                href={run.external_issue_url}
+                target="_blank"
+                className="mt-4 flex items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-sm text-slate-300 hover:bg-panel2"
+              >
+                Open source issue
+              </a>
+            )}
             {run.error_message && (
               <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
                 <div className="mb-1 font-medium text-red-100">Failure reason</div>
@@ -95,9 +106,12 @@ export function RunDetail() {
         </div>
 
         {/* Center: reasoning timeline */}
-        <div className="min-w-0 rounded-xl border border-line bg-panel p-5">
-          <h3 className="mb-4 text-sm font-medium text-slate-300">Reasoning trace</h3>
-          <ReasoningTimeline steps={run.steps} live={events} />
+        <div className="min-w-0 space-y-5">
+          <AgentActivity steps={run.steps} live={events} />
+          <div className="rounded-xl border border-line bg-panel p-5">
+            <h3 className="mb-4 text-sm font-medium text-slate-300">Reasoning trace</h3>
+            <ReasoningTimeline steps={run.steps} live={events} />
+          </div>
         </div>
 
         {/* Right: touched files + diff */}

@@ -8,7 +8,7 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, repositories, runs, webhook
+from app.api import health, jira_webhook, repositories, runs, webhook
 from app.config import settings
 from app.realtime.emitter import sio
 from app.utils.logger import configure_logging, get_logger
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     api.include_router(runs.router)
     api.include_router(repositories.router)
     api.include_router(webhook.router)
+    api.include_router(jira_webhook.router)
 
     @api.get("/")
     async def root() -> dict:

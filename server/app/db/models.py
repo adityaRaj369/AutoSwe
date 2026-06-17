@@ -87,6 +87,9 @@ class Run(Base):
     issue_number: Mapped[int] = mapped_column(Integer, nullable=False)
     issue_title: Mapped[str] = mapped_column(Text, nullable=False)
     issue_body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(32), default="github", nullable=False)
+    external_issue_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_issue_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[RunStatus] = mapped_column(
         Enum(RunStatus, name="run_status"), default=RunStatus.QUEUED, nullable=False
     )
@@ -118,6 +121,7 @@ class Step(Base):
         String(36), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
     step_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     thought: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool_args: Mapped[dict | None] = mapped_column(JSON, nullable=True)

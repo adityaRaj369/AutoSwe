@@ -75,6 +75,7 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
                     s,
                     run_id=run_id,
                     step_number=event["step"],
+                    agent_name=event.get("agent_name"),
                     thought=event.get("thought"),
                     tool_name=event.get("tool"),
                     tool_args=event.get("args"),
@@ -112,8 +113,28 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
     pr_error = None
     if result.status == AgentStatus.SOLVED and result.diff:
         try:
+            await emit_run_event(
+                run_id,
+                "agent:step",
+                {
+                    "type": "creating_pr",
+                    "agent_name": "PR Agent",
+                    "status": "executing",
+                    "observation": "Creating pull request from the approved diff.",
+                },
+            )
             pr_number, pr_url = await _open_pr(
                 gh, owner, name, run_id, issue, result
+            )
+            await emit_run_event(
+                run_id,
+                "agent:step",
+                {
+                    "type": "done",
+                    "agent_name": "PR Agent",
+                    "status": "complete",
+                    "observation": f"Pull request opened: {pr_url}",
+                },
             )
         except Exception as exc:
             pr_error = str(exc)

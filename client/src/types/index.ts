@@ -4,6 +4,7 @@ export type IndexStatus = "PENDING" | "INDEXING" | "READY" | "FAILED";
 export interface Step {
   id: string;
   step_number: number;
+  agent_name: string | null;
   thought: string | null;
   tool_name: string | null;
   tool_args: Record<string, any> | null;
@@ -18,6 +19,9 @@ export interface RunSummary {
   repository_id: string;
   issue_number: number;
   issue_title: string;
+  source: string;
+  external_issue_key: string | null;
+  external_issue_url: string | null;
   status: RunStatus;
   model: string;
   total_steps: number;
@@ -88,6 +92,7 @@ export interface LiveStep {
   run_id: string;
   type: "setup" | "think" | "act" | "observe" | string;
   step?: number;
+  agent_name?: string;
   thought?: string;
   tool?: string | null;
   args?: Record<string, any> | null;
