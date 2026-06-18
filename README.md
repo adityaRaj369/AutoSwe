@@ -16,6 +16,17 @@ https://github.com/user-attachments/assets/f68e549c-903a-47c0-a2d5-ec5ff8d96bed
 
 https://github.com/user-attachments/assets/aaedae4d-565f-43a6-8dfe-076cb1672d21
 
+
+**3. Screenshots of PR and solved issue from the dashboard**
+
+Dashboard solved issue:
+<img width="3430" height="1818" alt="image" src="https://github.com/user-attachments/assets/908fbd81-bc33-48f5-abda-a7671d867691" />
+
+
+Pull request created by AutoSWE:
+
+<img width="3430" height="1818" alt="image" src="https://github.com/user-attachments/assets/25560bb7-7ae0-4c86-bafa-e7f186a36e7b" />
+
 ## What AutoSWE does
 
 - **GitHub issue execution**: fetches a GitHub issue, builds an internal run, and lets the agent fix the target repo.
