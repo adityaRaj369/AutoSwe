@@ -11,10 +11,10 @@ This is a Python implementation of the AutoSWE architecture: a from-scratch ReAc
 ---
 x
 
-#Demo Video For Direct Issue Resolution From Github
+Demo Video For Direct Issue Resolution From Github
 https://github.com/user-attachments/assets/f68e549c-903a-47c0-a2d5-ec5ff8d96bed
 
-#Demo Video For Issue triggered from JIRA Ticket
+Demo Video For Issue triggered from JIRA Ticket
 https://github.com/user-attachments/assets/aaedae4d-565f-43a6-8dfe-076cb1672d21
 
 ## What's inside
