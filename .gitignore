@@ -25,3 +25,6 @@ github-private-key.pem
 
 # Logs
 *.log
+
+# Local tools
+tools/ngrok/

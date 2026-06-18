@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useRuns } from "../api/client";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { deleteFailedRuns, deleteRun, stopActiveRuns, stopRun, useRuns } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import type { RunStatus } from "../types";
 
@@ -9,7 +10,45 @@ const STATUSES: (RunStatus | "")[] = ["", "QUEUED", "RUNNING", "SOLVED", "FAILED
 export function RunsList() {
   const [status, setStatus] = useState<string>("");
   const [page, setPage] = useState(1);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const { data, isLoading } = useRuns({ status: status || undefined, page });
+  const refreshRuns = () => {
+    queryClient.invalidateQueries({ queryKey: ["runs"] });
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
+  };
+  const stopOne = useMutation({
+    mutationFn: stopRun,
+    onSuccess: () => {
+      setActionError(null);
+      refreshRuns();
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to stop run."),
+  });
+  const stopAll = useMutation({
+    mutationFn: stopActiveRuns,
+    onSuccess: () => {
+      setActionError(null);
+      refreshRuns();
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to stop active runs."),
+  });
+  const deleteOne = useMutation({
+    mutationFn: deleteRun,
+    onSuccess: () => {
+      setActionError(null);
+      refreshRuns();
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to delete run."),
+  });
+  const deleteFailed = useMutation({
+    mutationFn: deleteFailedRuns,
+    onSuccess: () => {
+      setActionError(null);
+      refreshRuns();
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to delete failed runs."),
+  });
 
   return (
     <div className="space-y-5">
@@ -20,25 +59,52 @@ export function RunsList() {
             Latest agent attempts, provider status, and PR results.
           </p>
         </div>
-        <select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value);
-            setPage(1);
-          }}
-          className="rounded-lg border border-line bg-panel px-3 py-1.5 text-sm text-slate-300"
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s || "All statuses"}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            disabled={stopAll.isPending}
+            onClick={() => {
+              setActionError(null);
+              stopAll.mutate();
+            }}
+            className="rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {stopAll.isPending ? "Stopping…" : "Stop all active"}
+          </button>
+          <button
+            disabled={deleteFailed.isPending}
+            onClick={() => {
+              setActionError(null);
+              deleteFailed.mutate();
+            }}
+            className="rounded-lg border border-line px-3 py-1.5 text-sm text-slate-300 hover:bg-panel2 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {deleteFailed.isPending ? "Deleting…" : "Delete failed"}
+          </button>
+          <select
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setPage(1);
+            }}
+            className="rounded-lg border border-line bg-panel px-3 py-1.5 text-sm text-slate-300"
+          >
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s || "All statuses"}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
+      {actionError && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {actionError}
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-line bg-panel">
         <div className="overflow-x-auto">
-        <table className="min-w-[760px] w-full text-sm">
+        <table className="min-w-[880px] w-full text-sm">
           <thead className="border-b border-line text-left text-xs uppercase text-slate-500">
             <tr>
               <th className="px-5 py-3">Issue</th>
@@ -46,12 +112,13 @@ export function RunsList() {
               <th className="px-5 py-3">Steps</th>
               <th className="px-5 py-3">Duration</th>
               <th className="px-5 py-3">PR</th>
+              <th className="px-5 py-3">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
             {isLoading && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
                   Loading…
                 </td>
               </tr>
@@ -84,11 +151,36 @@ export function RunsList() {
                     "—"
                   )}
                 </td>
+                <td className="px-5 py-3">
+                  {r.status === "QUEUED" || r.status === "RUNNING" ? (
+                    <button
+                      disabled={stopOne.isPending}
+                      onClick={() => {
+                        setActionError(null);
+                        stopOne.mutate(r.id);
+                      }}
+                      className="rounded-md border border-red-500/40 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Stop
+                    </button>
+                  ) : (
+                    <button
+                      disabled={deleteOne.isPending}
+                      onClick={() => {
+                        setActionError(null);
+                        deleteOne.mutate(r.id);
+                      }}
+                      className="rounded-md border border-line px-2.5 py-1 text-xs text-slate-400 hover:bg-panel2 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
             {data && data.items.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
                   No runs found.
                 </td>
               </tr>

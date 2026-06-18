@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from app.agent.runtime import AgentRuntime, IssueInput
+from app.agent.runtime import AgentRunStopped, AgentRuntime, IssueInput
 from app.agent.types import AgentStatus
 from app.config import settings
 from app.db import crud
@@ -32,6 +32,10 @@ _STATUS_MAP = {
 }
 
 
+class RunStopped(Exception):
+    """Raised when a user stops a queued or running job."""
+
+
 async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) -> None:
     indexer = indexer or IndexOrchestrator()
     started = time.time()
@@ -44,6 +48,9 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
         repo = await crud.get_repository(session, run.repository_id)
         if repo is None:
             log.warning("repo_not_found", run_id=run_id)
+            return
+        if run.status != RunStatus.QUEUED:
+            log.info("run_not_queued_skipping", run_id=run_id, status=run.status.value)
             return
         owner, name = repo.owner, repo.name
         installation_id = repo.installation_id
@@ -65,31 +72,41 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
 
     # Per-step persistence + live emit.
     async def on_step(event: dict) -> None:
+        await _raise_if_run_stopped(run_id)
         await emit_run_event(run_id, "agent:step", event)
         if event.get("type") == "observe":
             async with SessionLocal() as s:
                 run = await crud.get_run(s, run_id)
-                if run is not None:
+                if run is not None and run.status == RunStatus.RUNNING:
                     await crud.update_run(s, run, total_steps=event["step"])
-                await crud.add_step(
-                    s,
-                    run_id=run_id,
-                    step_number=event["step"],
-                    agent_name=event.get("agent_name"),
-                    thought=event.get("thought"),
-                    tool_name=event.get("tool"),
-                    tool_args=event.get("args"),
-                    observation=event.get("observation"),
-                    duration_ms=event.get("duration_ms"),
-                    token_count=event.get("token_count"),
-                )
-                await s.commit()
+                    await crud.add_step(
+                        s,
+                        run_id=run_id,
+                        step_number=event["step"],
+                        agent_name=event.get("agent_name"),
+                        thought=event.get("thought"),
+                        tool_name=event.get("tool"),
+                        tool_args=event.get("args"),
+                        observation=event.get("observation"),
+                        duration_ms=event.get("duration_ms"),
+                        token_count=event.get("token_count"),
+                    )
+                    await s.commit()
+                else:
+                    raise RunStopped("Run was stopped by user.")
 
     runtime = AgentRuntime()
     try:
         result = await runtime.solve(
-            issue, clone_url=clone_url, code_search=code_search, on_step=on_step
+            issue,
+            clone_url=clone_url,
+            code_search=code_search,
+            on_step=on_step,
+            should_stop=lambda: _is_run_stopped(run_id),
         )
+    except (AgentRunStopped, RunStopped):
+        await _complete_stopped_run(run_id, started)
+        return
     except Exception as exc:
         error_message = _agent_exception_message(exc)
         log.warning("agent_runtime_failed", run_id=run_id, error=error_message)
@@ -111,6 +128,12 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
 
     pr_number = pr_url = None
     pr_error = None
+    try:
+        await _raise_if_run_stopped(run_id)
+    except RunStopped:
+        await _complete_stopped_run(run_id, started)
+        return
+
     if result.status == AgentStatus.SOLVED and result.diff:
         try:
             await emit_run_event(
@@ -142,7 +165,7 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
 
     async with SessionLocal() as session:
         run = await crud.get_run(session, run_id)
-        if run is not None:
+        if run is not None and run.status == RunStatus.RUNNING:
             await crud.update_run(
                 session,
                 run,
@@ -157,6 +180,9 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
                 model=settings.agent_model_name,
             )
             await session.commit()
+        else:
+            await _complete_stopped_run(run_id, started)
+            return
 
     await emit_run_event(
         run_id,
@@ -164,6 +190,32 @@ async def process_run(run_id: str, *, indexer: IndexOrchestrator | None = None) 
         {"status": _final_run_status(result.status, pr_error).value, "pr_url": pr_url},
     )
     log.info("run_complete", run_id=run_id, status=result.status.value, pr=pr_number)
+
+
+async def _raise_if_run_stopped(run_id: str) -> None:
+    if await _is_run_stopped(run_id):
+        raise RunStopped("Run was stopped by user.")
+
+
+async def _is_run_stopped(run_id: str) -> bool:
+    async with SessionLocal() as session:
+        run = await crud.get_run(session, run_id)
+        return run is None or run.status not in (RunStatus.QUEUED, RunStatus.RUNNING)
+
+
+async def _complete_stopped_run(run_id: str, started: float) -> None:
+    async with SessionLocal() as session:
+        run = await crud.get_run(session, run_id)
+        if run is not None and run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+            await crud.update_run(
+                session,
+                run,
+                status=RunStatus.FAILED,
+                duration_ms=int((time.time() - started) * 1000),
+                error_message="Stopped by user.",
+            )
+            await session.commit()
+    await emit_run_event(run_id, "run:complete", {"status": RunStatus.FAILED.value, "pr_url": None})
 
 
 async def _ensure_index(indexer, repo_id, owner, name, clone_url):  # type: ignore[no-untyped-def]

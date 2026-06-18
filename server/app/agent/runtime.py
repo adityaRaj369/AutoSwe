@@ -52,6 +52,11 @@ class AgentResult:
 
 # Callback signature for streaming step lifecycle events.
 StepCallback = Callable[[dict[str, Any]], Awaitable[None]]
+StopCallback = Callable[[], Awaitable[bool]]
+
+
+class AgentRunStopped(Exception):
+    """Raised when the queue processor asks the agent loop to stop."""
 
 
 class AgentRuntime:
@@ -76,6 +81,7 @@ class AgentRuntime:
         clone_url: str | None,
         code_search: CodeSearchFn | None = None,
         on_step: StepCallback | None = None,
+        should_stop: StopCallback | None = None,
     ) -> AgentResult:
         started = time.time()
         trajectory = Trajectory()
@@ -85,13 +91,17 @@ class AgentRuntime:
         ctx = ToolContext(sandbox=sandbox, code_search=code_search)
 
         try:
+            await self._raise_if_stopped(should_stop)
             # Baseline tests + working branch.
             baseline = await self._baseline(ctx)
+            await self._raise_if_stopped(should_stop)
             ctx.baseline_tests = baseline
             await sandbox.exec(f"git config user.email autoswe@bot && git config user.name AutoSWE")
+            await self._raise_if_stopped(should_stop)
             await sandbox.exec(f"git checkout -b {branch}")
 
             await self._emit(on_step, {"type": "setup", "baseline": baseline, "branch": branch})
+            await self._raise_if_stopped(should_stop)
 
             system_prompt = self.prompt_builder.system_prompt()
             issue_block = self.prompt_builder.issue_block(issue.title, issue.body, issue.labels)
@@ -99,6 +109,7 @@ class AgentRuntime:
             unsupported_tool_failures = 0
 
             for step_num in range(1, self.max_steps + 1):
+                await self._raise_if_stopped(should_stop)
                 step_started = time.time()
 
                 user_prompt = self.prompt_builder.user_prompt(
@@ -108,6 +119,7 @@ class AgentRuntime:
 
                 # REASON + decide ACT (single LLM call returns both).
                 raw = await self.llm.chat(system_prompt, user_prompt, max_tokens=1024)
+                await self._raise_if_stopped(should_stop)
                 parsed = parse_response(raw)
                 thought = parsed.thought or "(no explicit reasoning)"
                 action = parsed.action
@@ -123,6 +135,7 @@ class AgentRuntime:
                         "status": "executing",
                     },
                 )
+                await self._raise_if_stopped(should_stop)
 
                 # Handle parse failures / control actions.
                 if action is None:
@@ -134,6 +147,7 @@ class AgentRuntime:
                     trajectory.add(
                         TrajectoryStep(step_num, thought, None, observation, token_count=token_count)
                     )
+                    await self._raise_if_stopped(should_stop)
                     await self._persist_step(on_step, step_num, agent_name, thought, None, observation,
                                              step_started, token_count)
                     if parse_failures >= MAX_PARSE_FAILURES:
@@ -193,9 +207,11 @@ class AgentRuntime:
                         "args": action.args,
                     },
                 )
+                await self._raise_if_stopped(should_stop)
 
                 # ACT
                 result = await self.registry.dispatch(action.tool, ctx, action.args)
+                await self._raise_if_stopped(should_stop)
 
                 # Submission gate.
                 if action.tool == "submit_solution" and result.submit:
@@ -205,6 +221,7 @@ class AgentRuntime:
                     trajectory.add(
                         TrajectoryStep(step_num, thought, action, observation, token_count=token_count)
                     )
+                    await self._raise_if_stopped(should_stop)
                     await self._persist_step(on_step, step_num, agent_name, thought, action, observation,
                                              step_started, token_count)
                     return self._result(
@@ -221,6 +238,7 @@ class AgentRuntime:
                     token_count=token_count,
                 )
                 trajectory.add(step)
+                await self._raise_if_stopped(should_stop)
                 await self._persist_step(on_step, step_num, agent_name, thought, action, observation,
                                          step_started, token_count)
 
@@ -271,6 +289,10 @@ class AgentRuntime:
                 await cb(payload)
             except Exception as exc:  # pragma: no cover - never let UI break the loop
                 log.warning("step_callback_failed", error=str(exc))
+
+    async def _raise_if_stopped(self, should_stop: StopCallback | None) -> None:
+        if should_stop is not None and await should_stop():
+            raise AgentRunStopped("Run was stopped by user.")
 
     async def _persist_step(
         self,

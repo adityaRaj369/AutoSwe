@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import crud
 from app.db.base import get_session
-from app.db.models import RunStatus
+from app.db.models import Run, RunStatus
 from app.db.schemas import (
     ManualRunRequest,
     PaginatedRuns,
@@ -20,6 +22,7 @@ from app.db.schemas import (
 )
 from app.github.client import GitHubClient
 from app.queue.config import enqueue_run
+from app.realtime.emitter import emit_run_event
 from app.utils.logger import get_logger
 
 log = get_logger("api.runs")
@@ -52,12 +55,95 @@ async def list_runs(
     )
 
 
+@router.delete("/failed")
+async def delete_failed_runs(session: AsyncSession = Depends(get_session)) -> dict[str, int]:
+    rows = (
+        await session.execute(
+            select(Run).where(Run.status.in_([RunStatus.FAILED, RunStatus.TIMEOUT]))
+        )
+    ).scalars().all()
+
+    for run in rows:
+        await session.delete(run)
+
+    await session.commit()
+    return {"deleted": len(rows)}
+
+
+@router.post("/stop-active", response_model=list[RunSummary])
+async def stop_active_runs(session: AsyncSession = Depends(get_session)) -> list[RunSummary]:
+    rows = (
+        await session.execute(
+            select(Run).where(Run.status.in_([RunStatus.QUEUED, RunStatus.RUNNING]))
+        )
+    ).scalars().all()
+
+    stopped: list[RunSummary] = []
+    for run in rows:
+        await _stop_run(session, run)
+        stopped.append(RunSummary.model_validate(run))
+
+    if stopped:
+        await session.commit()
+        for run in rows:
+            await emit_run_event(run.id, "run:complete", {"status": RunStatus.FAILED.value, "pr_url": None})
+
+    return stopped
+
+
 @router.get("/{run_id}", response_model=RunDetail)
 async def get_run(run_id: str, session: AsyncSession = Depends(get_session)) -> RunDetail:
     run = await crud.get_run(session, run_id, with_steps=True)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return RunDetail.model_validate(run)
+
+
+@router.delete("/{run_id}")
+async def delete_run(run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    run = await crud.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        raise HTTPException(status_code=409, detail="Stop the run before deleting it")
+
+    await session.delete(run)
+    await session.commit()
+    return {"deleted": run_id}
+
+
+@router.post("/{run_id}/stop", response_model=RunSummary)
+async def stop_run(run_id: str, session: AsyncSession = Depends(get_session)) -> RunSummary:
+    run = await crud.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if await _stop_run(session, run):
+        await session.commit()
+        await emit_run_event(run_id, "run:complete", {"status": RunStatus.FAILED.value, "pr_url": None})
+
+    return RunSummary.model_validate(run)
+
+
+async def _stop_run(session: AsyncSession, run: Run) -> bool:
+    if run.status not in (RunStatus.QUEUED, RunStatus.RUNNING):
+        return False
+
+    duration_ms = run.duration_ms
+    if duration_ms is None and run.created_at is not None:
+        created_at = run.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        duration_ms = int((datetime.now(timezone.utc) - created_at).total_seconds() * 1000)
+
+    await crud.update_run(
+        session,
+        run,
+        status=RunStatus.FAILED,
+        duration_ms=duration_ms,
+        error_message="Stopped by user.",
+    )
+    return True
 
 
 @router.post("/manual", response_model=RunSummary, status_code=202)

@@ -48,6 +48,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://autoswe:autoswe@postgres:5432/autoswe
       REDIS_URL: redis://redis:6379
+      WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-2}
+      WORKER_JOB_TIMEOUT_S: ${WORKER_JOB_TIMEOUT_S:-900}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai-compatible}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
@@ -94,6 +96,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://autoswe:autoswe@postgres:5432/autoswe
       REDIS_URL: redis://redis:6379
+      WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-2}
+      WORKER_JOB_TIMEOUT_S: ${WORKER_JOB_TIMEOUT_S:-900}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai-compatible}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}

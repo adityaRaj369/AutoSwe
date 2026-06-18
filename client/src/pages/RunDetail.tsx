@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, GitPullRequest, Radio } from "lucide-react";
-import { useRun } from "../api/client";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { deleteRun, stopRun, useRun } from "../api/client";
 import { useLiveRun } from "../socket/useSocket";
 import { StatusBadge } from "../components/StatusBadge";
 import { ReasoningTimeline } from "../components/timeline/ReasoningTimeline";
@@ -11,8 +12,31 @@ import { AgentActivity } from "../components/AgentActivity";
 
 export function RunDetail() {
   const { id } = useParams();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const { data: run, isLoading, refetch } = useRun(id);
   const { events, connected, completed } = useLiveRun(id);
+  const stop = useMutation({
+    mutationFn: stopRun,
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["run", id] });
+      refetch();
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to stop run."),
+  });
+  const deleteCurrent = useMutation({
+    mutationFn: deleteRun,
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      window.location.href = "/runs";
+    },
+    onError: (error: any) => setActionError(error?.response?.data?.detail || "Unable to delete run."),
+  });
 
   // Refetch persisted run whenever a step completes or the run finishes.
   const observeCount = events.filter((e) => e.type === "observe").length;
@@ -43,6 +67,11 @@ export function RunDetail() {
       <Link to="/runs" className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200">
         <ArrowLeft className="h-4 w-4" /> Back to runs
       </Link>
+      {actionError && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {actionError}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(360px,460px)_minmax(0,1fr)_minmax(420px,560px)]">
         {/* Left: issue metadata */}
@@ -51,10 +80,36 @@ export function RunDetail() {
             <div className="mb-2 flex items-center justify-between">
               <StatusBadge status={run.status} />
               {isLive && (
-                <span className="flex items-center gap-1 text-xs text-blue-300">
-                  <Radio className={`h-3 w-3 ${connected ? "text-green-400" : "text-slate-500"}`} />
-                  live
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1 text-xs text-blue-300">
+                    <Radio className={`h-3 w-3 ${connected ? "text-green-400" : "text-slate-500"}`} />
+                    live
+                  </span>
+                  <button
+                    disabled={!id || stop.isPending}
+                    onClick={() => {
+                      if (!id) return;
+                      setActionError(null);
+                      stop.mutate(id);
+                    }}
+                    className="rounded-md border border-red-500/40 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {stop.isPending ? "Stopping…" : "Stop"}
+                  </button>
+                </div>
+              )}
+              {!isLive && (
+                <button
+                  disabled={!id || deleteCurrent.isPending}
+                  onClick={() => {
+                    if (!id) return;
+                    setActionError(null);
+                    deleteCurrent.mutate(id);
+                  }}
+                  className="rounded-md border border-line px-2.5 py-1 text-xs text-slate-400 hover:bg-panel2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {deleteCurrent.isPending ? "Deleting…" : "Delete"}
+                </button>
               )}
             </div>
             <h2 className="text-base font-medium text-slate-100">

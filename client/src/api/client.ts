@@ -54,6 +54,22 @@ export async function triggerManualRun(repo_id: string, issue_number: number) {
   return (await api.post("/api/runs/manual", { repo_id, issue_number })).data;
 }
 
+export async function stopRun(runId: string) {
+  return (await api.post(`/api/runs/${runId}/stop`)).data;
+}
+
+export async function stopActiveRuns() {
+  return (await api.post("/api/runs/stop-active")).data;
+}
+
+export async function deleteRun(runId: string) {
+  return (await api.delete(`/api/runs/${runId}`)).data;
+}
+
+export async function deleteFailedRuns() {
+  return (await api.delete("/api/runs/failed")).data;
+}
+
 export async function connectRepository(owner: string, name: string) {
   return (await api.post("/api/repositories", { owner, name })).data;
 }

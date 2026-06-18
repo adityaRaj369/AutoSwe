@@ -1,21 +1,25 @@
 """Jira webhook receiver.
 
-Starts an AutoSWE run when a Jira issue transitions into the configured
+Starts an AutoSWE run when a Jira issue transitions into a configured
 automation status (default: AutoSWE).
 """
 
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from json import JSONDecodeError
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import crud
 from app.db.base import get_session
+from app.db.models import Run, RunStatus
 from app.queue.config import enqueue_run
+from app.realtime.emitter import emit_run_event
 from app.utils.logger import get_logger
 
 log = get_logger("api.jira_webhook")
@@ -24,15 +28,16 @@ router = APIRouter(prefix="/api/webhook/jira", tags=["jira"])
 
 @router.post("", status_code=202)
 async def jira_webhook(
-    payload: dict[str, Any],
+    request: Request,
     session: AsyncSession = Depends(get_session),
     secret: str | None = Query(default=None),
     x_autoswe_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
     _verify_secret(secret or x_autoswe_secret)
+    payload = await _read_payload(request)
 
-    if not _changed_to_autoswe(payload):
-        return {"status": "ignored", "reason": "status_not_autoswe"}
+    if not _changed_to_auto_status(payload):
+        return {"status": "ignored", "reason": "status_not_configured_for_autoswe"}
 
     issue = payload.get("issue") or {}
     fields = issue.get("fields") or {}
@@ -52,14 +57,17 @@ async def jira_webhook(
     existing = await crud.get_active_run_by_external_issue(
         session, source="jira", external_issue_key=issue_key
     )
-    if existing is not None:
-        return {"status": "already_running", "run_id": existing.id}
 
     repo = await crud.upsert_repository(session, owner=owner, name=repo_name)
     title = fields.get("summary") or issue_key
     body = _jira_issue_body(issue)
     issue_number = _issue_number(issue_key)
     issue_url = _issue_url(issue_key)
+
+    replaced_run_id = None
+    if existing is not None:
+        replaced_run_id = existing.id
+        await _stop_existing_run(session, existing)
 
     run = await crud.create_run(
         session,
@@ -73,9 +81,26 @@ async def jira_webhook(
         external_issue_url=issue_url,
     )
     await session.commit()
+    if replaced_run_id is not None:
+        await emit_run_event(
+            replaced_run_id,
+            "run:complete",
+            {"status": RunStatus.FAILED.value, "pr_url": None},
+        )
     await enqueue_run(run.id)
-    log.info("jira_run_queued", run_id=run.id, issue=issue_key, repo=f"{owner}/{repo_name}")
-    return {"status": "queued", "run_id": run.id, "issue_key": issue_key}
+    log.info(
+        "jira_run_queued",
+        run_id=run.id,
+        issue=issue_key,
+        repo=f"{owner}/{repo_name}",
+        replaced_run_id=replaced_run_id,
+    )
+    return {
+        "status": "requeued" if replaced_run_id else "queued",
+        "run_id": run.id,
+        "issue_key": issue_key,
+        "replaced_run_id": replaced_run_id,
+    }
 
 
 def _verify_secret(provided: str | None) -> None:
@@ -83,17 +108,79 @@ def _verify_secret(provided: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid Jira webhook secret")
 
 
-def _changed_to_autoswe(payload: dict[str, Any]) -> bool:
-    target = settings.jira_auto_status.strip().lower()
+async def _read_payload(request: Request) -> dict[str, Any]:
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Jira webhook body is empty")
+
+    try:
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            return parsed
+    except (JSONDecodeError, UnicodeDecodeError, ValueError):
+        pass
+
+    return _parse_text_payload(body.decode("utf-8", errors="replace"))
+
+
+def _parse_text_payload(text: str) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    description_lines: list[str] = []
+    in_description = False
+
+    for raw_line in text.replace("\r\n", "\n").split("\n"):
+        line = raw_line.rstrip("\r")
+        if in_description:
+            description_lines.append(line)
+            continue
+        if line.strip() == "DESCRIPTION:":
+            in_description = True
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+            headers[key.strip().upper()] = value.strip()
+
+    issue_key = headers.get("ISSUE_KEY", "")
+    project_key = headers.get("PROJECT_KEY", "")
+    status = headers.get("STATUS", "")
+    summary = headers.get("SUMMARY", issue_key)
+    description = "\n".join(description_lines).strip()
+
+    if not issue_key or not project_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Plain-text Jira body must include ISSUE_KEY and PROJECT_KEY",
+        )
+
+    return {
+        "issue": {
+            "key": issue_key,
+            "fields": {
+                "project": {"key": project_key},
+                "summary": summary,
+                "description": description,
+                "status": {"name": status},
+                "labels": [],
+            },
+        },
+        "changelog": {"items": [{"field": "status", "toString": status}]},
+    }
+
+
+def _changed_to_auto_status(payload: dict[str, Any]) -> bool:
+    targets = settings.jira_auto_status_list
+    if not targets:
+        return False
+
     changelog = payload.get("changelog") or {}
     for item in changelog.get("items") or []:
         if str(item.get("field", "")).lower() != "status":
             continue
-        if str(item.get("toString", "")).strip().lower() == target:
+        if str(item.get("toString", "")).strip().lower() in targets:
             return True
     fields = (payload.get("issue") or {}).get("fields") or {}
     status = (fields.get("status") or {}).get("name")
-    return str(status or "").strip().lower() == target
+    return str(status or "").strip().lower() in targets
 
 
 def _issue_number(issue_key: str) -> int:
@@ -105,6 +192,23 @@ def _issue_url(issue_key: str) -> str | None:
     if not settings.jira_base_url:
         return None
     return f"{settings.jira_base_url.rstrip('/')}/browse/{issue_key}"
+
+
+async def _stop_existing_run(session: AsyncSession, run: Run) -> None:
+    duration_ms = run.duration_ms
+    if duration_ms is None and run.created_at is not None:
+        created_at = run.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        duration_ms = int((datetime.now(timezone.utc) - created_at).total_seconds() * 1000)
+
+    await crud.update_run(
+        session,
+        run,
+        status=RunStatus.FAILED,
+        duration_ms=duration_ms,
+        error_message="Restarted by Jira AutoSWE transition.",
+    )
 
 
 def _jira_issue_body(issue: dict[str, Any]) -> str:

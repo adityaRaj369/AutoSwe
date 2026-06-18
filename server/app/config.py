@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # --- Redis / Queue ---
     redis_url: str = Field(default="redis://localhost:6379", alias="REDIS_URL")
+    worker_max_jobs: int = Field(default=2, alias="WORKER_MAX_JOBS")
+    worker_job_timeout_s: int = Field(default=900, alias="WORKER_JOB_TIMEOUT_S")
 
     # --- Agent LLM provider ---
     llm_provider: str = Field(default="ollama", alias="LLM_PROVIDER")
@@ -191,6 +193,14 @@ class Settings(BaseSettings):
             owner, repo = full_name.split("/", 1)
             mapping[project_key.strip().upper()] = (owner.strip(), repo.strip())
         return mapping
+
+    @property
+    def jira_auto_status_list(self) -> set[str]:
+        return {
+            status.strip().lower()
+            for status in self.jira_auto_status.split(",")
+            if status.strip()
+        }
 
 
 @lru_cache
