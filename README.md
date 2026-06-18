@@ -1,3 +1,7 @@
+
+
+
+
 # AutoSWE — Autonomous Software Engineering Agent
 
 > Takes a GitHub issue, autonomously explores the codebase, reasons about the root cause, writes a fix, verifies it by running tests, and opens a pull request. Production mode uses an OpenAI-compatible hosted model with JSON-mode action output; Ollama remains supported for embeddings and local-only experimentation. Built from scratch with **no agent frameworks** (no LangChain, no CrewAI). **Python backend (FastAPI).**
@@ -10,6 +14,7 @@ x
 
 https://github.com/user-attachments/assets/f68e549c-903a-47c0-a2d5-ec5ff8d96bed
 
+https://github.com/user-attachments/assets/aaedae4d-565f-43a6-8dfe-076cb1672d21
 
 ## What's inside
 
