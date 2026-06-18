@@ -1,12 +1,8 @@
-
-
-
-
 # AutoSWE — Autonomous Software Engineering Agent
 
-> Takes a GitHub issue, autonomously explores the codebase, reasons about the root cause, writes a fix, verifies it by running tests, and opens a pull request. Production mode uses an OpenAI-compatible hosted model with JSON-mode action output; Ollama remains supported for embeddings and local-only experimentation. Built from scratch with **no agent frameworks** (no LangChain, no CrewAI). **Python backend (FastAPI).**
+> AutoSWE turns GitHub issues and Jira tickets into autonomous coding runs. It maps an issue to a repository, clones/indexes the codebase, runs a ReAct-style coding agent in a sandbox, streams every reasoning/tool step to a dashboard, verifies changes with tests, and can open a GitHub pull request.
 
-This is a Python implementation of the AutoSWE architecture: a from-scratch ReAct agent loop, a RAG code-search pipeline, a sandboxed execution environment, self-verification via tests, and a real-time React reasoning-trace dashboard.
+This project is a from-scratch agentic software engineering platform built with **FastAPI, React, PostgreSQL, Redis, ChromaDB, Docker, Socket.IO, GitHub API, Jira Automation, and multi-provider LLM fallback**. It does not use LangChain, CrewAI, or another agent framework; the prompt loop, tool registry, trajectory handling, queue processor, and realtime trace system are implemented directly.
 
 ---
 
@@ -20,19 +16,31 @@ https://github.com/user-attachments/assets/f68e549c-903a-47c0-a2d5-ec5ff8d96bed
 
 https://github.com/user-attachments/assets/aaedae4d-565f-43a6-8dfe-076cb1672d21
 
+## What AutoSWE does
+
+- **GitHub issue execution**: fetches a GitHub issue, builds an internal run, and lets the agent fix the target repo.
+- **Jira-triggered execution**: Jira Automation can call `/api/webhook/jira` when a ticket enters `AutoSWE`, `In Progress`, or another configured status.
+- **Repository mapping**: Jira project keys map to GitHub repositories, for example `SCRUM=adityaRaj369/Coding-Collaborator-Ai-Compiler`.
+- **Autonomous coding loop**: the agent searches code, reads files, edits files, runs tests, inspects diffs, and submits a solution.
+- **Real-time dashboard**: React UI shows run state, agent activity, tool calls, observations, diffs, touched files, tests, errors, and PR links.
+- **Run controls**: active runs can be stopped; completed/failed runs can be deleted; failed runs can be bulk-cleaned for demos.
+- **Multi-provider resilience**: supports Gemini, Groq, OpenRouter, OpenAI-compatible APIs, and local Ollama fallback.
+- **Sandboxed execution**: tools run inside an isolated Docker sandbox with memory/CPU limits.
+
 ## What's inside
 
 | Layer | Technology |
 |------|------------|
 | API + webhooks | FastAPI + Uvicorn |
-| Real-time | python-socketio (Redis-backed, cross-process) |
-| Database | PostgreSQL + SQLAlchemy (async) + Alembic |
-| Queue | arq (Redis) |
+| Real-time | python-socketio with Redis-backed cross-process events |
+| Database | PostgreSQL + SQLAlchemy async + Alembic |
+| Queue | arq + Redis, configurable worker concurrency |
 | Vector store | ChromaDB |
-| Agent LLM | OpenAI-compatible JSON mode (`llama-3.3-70b-versatile` on GroqCloud by default) or optional Ollama local mode |
+| Agent LLM | OpenAI-compatible clients with provider fallback: Gemini, Groq, OpenRouter, Ollama |
 | Embeddings | Ollama `nomic-embed-text` |
-| Sandbox | Docker (docker-py) with a local fallback |
-| GitHub | App (JWT→installation token) or PAT, over httpx |
+| Sandbox | Docker sandbox manager with local fallback |
+| GitHub | PAT or GitHub App support for issue fetch, branch push, PR creation |
+| Jira | Jira Automation webhook receiver with project-to-repo mapping |
 | Dashboard | React 18 + Vite + Tailwind + Recharts + Framer Motion + Socket.IO |
 
 ---
@@ -40,18 +48,21 @@ https://github.com/user-attachments/assets/aaedae4d-565f-43a6-8dfe-076cb1672d21
 ## Architecture
 
 ```
-GitHub issue ──(webhook)──▶ FastAPI ──▶ arq queue ──▶ Agent Runtime
-                                                          │
-   ┌──────────────────────────────────────────────────────┘
-   ▼
-ReAct loop:  REASON (LLM) → ACT (tool) → OBSERVE (result)   ×25 max
-   │  tools: search_code(RAG) grep read_file list_directory edit_file
-   │         create_file run_command run_tests git_diff submit_solution
-   │  runs inside a Docker sandbox (mem/CPU limited)
-   ▼
-self-verify (tests must pass) → push branch → open PR with auto description
-   │
-   └──▶ every step streamed over Socket.IO ──▶ React reasoning-trace dashboard
+GitHub issue/manual run ─┐
+Jira Automation webhook ───┼──▶ FastAPI ──▶ PostgreSQL Run ──▶ arq/Redis queue ──▶ Agent Runtime
+Repository dashboard ──────┘                                                        │
+                                                                                    ▼
+                                                                    REASON → ACT → OBSERVE loop
+                                                                      tools: search_code, grep,
+                                                                      read_file, edit_file,
+                                                                      run_tests, git_diff,
+                                                                      submit_solution
+                                                                                    │
+                                                                                    ▼
+                                                              Docker sandbox + test verification
+                                                                                    │
+                                                                                    ▼
+                                                              GitHub branch/PR + live dashboard
 ```
 
 The ReAct loop lives in [`server/app/agent/runtime.py`](server/app/agent/runtime.py).
@@ -104,9 +115,10 @@ cd client && npm install && npm run dev
 ```
 
 ### Try it
-1. Open the dashboard → **Repositories** → connect `owner/repo` (indexing starts automatically).
-2. Trigger a run by issue number, **or** install the GitHub App / point a webhook at `/api/webhook/github` and label an issue `autoswe`.
-3. Open the run and watch the reasoning trace stream in real time.
+1. Open the dashboard → **Repositories** → connect `owner/repo` so the codebase can be indexed.
+2. Start from GitHub/manual flow: open **Issues**, pick an issue, and trigger a run.
+3. Start from Jira flow: move a configured Jira ticket into the `AutoSWE` status so Jira Automation calls `/api/webhook/jira`.
+4. Open **Runs** and watch the reasoning trace, agent activity, touched files, tests, diff, errors, and PR status stream in real time.
 
 Seed a demo run for screenshots:
 ```bash
@@ -147,6 +159,55 @@ Then open http://localhost:5173.
 The demo health endpoint may show `ollama=false` if Ollama is not running. That is
 expected for the dashboard-only path.
 
+### Jira Automation setup
+
+AutoSWE supports Jira through a project-to-repository map. Configure `.env` like:
+
+```bash
+JIRA_BASE_URL=https://your-domain.atlassian.net
+JIRA_WEBHOOK_SECRET=choose-a-secret
+JIRA_AUTO_STATUS=AutoSWE,In Progress,To Do
+JIRA_PROJECT_REPO_MAP=SCRUM=adityaRaj369/Coding-Collaborator-Ai-Compiler
+```
+
+For local demos, expose the backend with ngrok:
+
+```bash
+./tools/ngrok/ngrok http 3001 --config ./tools/ngrok/ngrok.yml
+```
+
+Use the generated URL in Jira Automation:
+
+```text
+https://<ngrok-host>/api/webhook/jira?secret=<JIRA_WEBHOOK_SECRET>
+```
+
+In the Jira rule, use:
+
+- Trigger: **Work item transitioned**
+- From status: blank
+- To status: blank, or the specific `AutoSWE` status
+- Action: **Send web request**
+- Method: `POST`
+- Header: `Content-Type: text/plain`
+- Body:
+
+```text
+ISSUE_KEY={{issue.key}}
+PROJECT_KEY={{issue.project.key}}
+STATUS={{issue.status.name}}
+SUMMARY={{issue.summary}}
+DESCRIPTION:
+{{issue.description}}
+```
+
+`text/plain` is intentional. Jira descriptions often contain raw newlines; sending
+them as unescaped JSON can produce HTTP `422` errors before AutoSWE can process
+the request.
+
+A good Jira ticket description should include the problem, expected behavior,
+actual behavior, likely file/API area, acceptance criteria, and validation command.
+
 ### Full end-to-end agent test requirements
 
 Before testing the real GitHub issue → fix branch → PR flow, complete these:
@@ -164,26 +225,26 @@ private repositories, push branches, or open pull requests.
 For production webhook use, set `GITHUB_WEBHOOK_SECRET`. In production mode,
 unsigned GitHub webhooks are rejected.
 
-Recommended production LLM settings:
+Recommended multi-provider LLM settings:
 
 ```bash
 LLM_PROVIDER=openai-compatible
-LLM_API_KEY=gsk_...
-LLM_MODEL=llama-3.3-70b-versatile
-LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_TIMEOUT_S=180
+LLM_MODEL=gemini-2.0-flash
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_API_KEY=<primary-key>
+GEMINI_API_KEY=<gemini-key>
+GROQ_API_KEY=<groq-key>
+OPENROUTER_API_KEY=<openrouter-key>
+LLM_FALLBACK_ENABLED=true
+LLM_FALLBACK_ORDER=groq,primary,openrouter,ollama
+LLM_TIMEOUT_S=45
+OLLAMA_TIMEOUT_S=60
+WORKER_MAX_JOBS=2
 ```
 
-Local Ollama chat remains available for experimentation, but it is not the
-recommended production path for autonomous bug fixing:
-
-```bash
-LLM_PROVIDER=ollama
-OLLAMA_CHAT_MODEL=qwen2.5-coder:7b
-OLLAMA_EMBED_MODEL=nomic-embed-text
-OLLAMA_EMBED_CONCURRENCY=1
-OLLAMA_TIMEOUT_S=180
-```
+The fallback chain lets a run continue when one free-tier provider is throttled.
+Ollama remains useful as the final local fallback, but hosted models are usually
+more reliable for autonomous code edits and PR creation.
 
 ### Current production-readiness status
 
@@ -200,9 +261,11 @@ The GitHub E2E path is designed to:
 
 Merging is intentionally left to GitHub review/permissions.
 
-Jira/ClickUp ingestion is not part of the current code path yet; add it as a
-separate connector service that creates the same internal `Run` records used by
-GitHub/manual triggers.
+Jira ingestion is implemented through Jira Automation. When a ticket transitions
+into a configured status, Jira sends a webhook to `/api/webhook/jira`; AutoSWE
+maps the Jira project key to a GitHub repository, creates or requeues a run, and
+uses the Jira summary/description as the task prompt. ClickUp ingestion is not
+implemented yet, but it can use the same internal `Run` creation path.
 
 ---
 
@@ -254,10 +317,15 @@ autoswe/
 
 ```
 POST   /api/webhook/github           GitHub webhook receiver
+POST   /api/webhook/jira             Jira Automation webhook receiver
 GET    /api/runs                     List runs (paginated, filterable)
 GET    /api/runs/{id}                Run detail with all steps
 GET    /api/runs/stats               Aggregate stats
 POST   /api/runs/manual              Manually trigger a run {repo_id, issue_number}
+POST   /api/runs/{id}/stop           Stop one queued/running run
+POST   /api/runs/stop-active         Stop all queued/running runs
+DELETE /api/runs/{id}                Delete a completed/stopped run
+DELETE /api/runs/failed              Delete failed/timeout runs
 GET    /api/repositories             List repos
 POST   /api/repositories             Connect a repo {owner, name}
 POST   /api/repositories/{id}/reindex
@@ -285,7 +353,8 @@ indexing stability, PR patch application, and PR failure status handling.
 ---
 
 ## Notes
-- Production reliability requires a hosted agent model. Local Ollama chat is supported but should be treated as experimental for full autonomous PR generation.
-- Built without LangChain/CrewAI: prompt construction, trajectory management, and tool dispatch are all explicit and inspectable.
-- Model recommendations: `deepseek-coder-v2:16b` (best), `qwen2.5-coder:14b`, `codellama:13b`. Embeddings: always `nomic-embed-text`.
-# AutoSwe
+- Temporary ngrok URLs change when ngrok restarts. For reliable Jira demos, use a stable public backend URL, a reserved ngrok domain, or Cloudflare Tunnel.
+- Jira descriptions are accepted as newline-safe `text/plain` webhook bodies to avoid JSON escaping failures from Jira Automation smart values.
+- Production reliability requires hosted LLM capacity. Free-tier Gemini/Groq/OpenRouter keys work for demos, but throttling can slow or fail long tasks.
+- Built without LangChain/CrewAI: prompt construction, trajectory management, cancellation, queueing, and tool dispatch are explicit and inspectable.
+- Embeddings use `nomic-embed-text`; local chat fallback can use `deepseek-coder-v2:16b`, `qwen2.5-coder:14b`, or another Ollama coding model.
